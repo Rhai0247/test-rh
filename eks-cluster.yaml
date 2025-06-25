@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EKS Cluster with Security Groups and Logging
+
+Conditions:
+  EnableLoggingCondition: !Equals [!Ref EnableLogging, 'true']
+  EnablePublicAccessCondition: !Equals [!Ref EnablePublicAccess, 'true']
+  UseImportValue: !Equals [!Ref EksClusterRoleArn, '']
+
+Parameters:
+  VPC:
+    Description: Select the VPC
+    Type: AWS::EC2::VPC::Id
+    Default: ""
+  
+  EksClusterSubnetIds:
+    Description: Select subnets for EKS cluster
+    Type: List<AWS::EC2::Subnet::Id>
+    Default: ""
+  
+  EnvironmentName:
+    Description: Name of the environment
+    Type: String
+    Default: ""
+  
+  EksClusterName:
+    Description: Name of EKS cluster
+    Type: String
+    Default: ""
+  
+  EksVersion:
+    Description: Version of EKS
+    Type: String
+    Default: '1.33'
+  
+  EnableLogging:
+    Description: Enable EKS control plane logging
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  
+  LogRetentionDays:
+    Description: CloudWatch log retention in days
+    Type: Number
+    Default: 7
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+  
+  EnablePublicAccess:
+    Description: Enable public API server endpoint
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  
+  PublicAccessCidrs:
+    Description: CIDR blocks for public API access. if EnablePublicAccess is true then required CIDR here like 0.0.0.0/0
+    Type: CommaDelimitedList
+    Default: ''
+  
+  IAMStackName:
+    Description: Name of the IAM roles stack
+    Type: String
+    Default: eks-iam-roles
+  
+  EksClusterRoleArn:
+    Description: EKS Cluster Role ARN (if not using stack import)
+    Type: String
+    Default: ''
+
+Resources:
+  EksClusterSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EKS cluster security group
+      GroupName: !Sub ${AWS::StackName}-cluster-sg
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  EksClusterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: EnableLoggingCondition
+    Properties:
+      LogGroupName: !Sub '/aws/eks/${EksClusterName}/cluster'
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Name
+          Value: !Sub '${EksClusterName}-log-group'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  EksCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref EksClusterName
+      Version: !Ref EksVersion
+      RoleArn: !If
+        - UseImportValue
+        - Fn::ImportValue: !Sub '${IAMStackName}-EksClusterRoleArn'
+        - !Ref EksClusterRoleArn
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          - !Ref EksClusterSG
+        SubnetIds: !Ref EksClusterSubnetIds
+        EndpointPublicAccess: !Ref EnablePublicAccess
+        EndpointPrivateAccess: true
+        PublicAccessCidrs: !If [EnablePublicAccessCondition, !Ref PublicAccessCidrs, !Ref 'AWS::NoValue']
+      Logging:
+        ClusterLogging:
+          EnabledTypes:
+            - Type: api
+            - Type: audit
+            - Type: authenticator
+            - Type: controllerManager
+            - Type: scheduler
+      EncryptionConfig:
+        - Resources: ['secrets']
+          Provider:
+            KeyArn: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/eks'
+      Tags:
+        - Key: Name
+          Value: !Ref EksClusterName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  EksClusterName:
+    Description: EKS Cluster Name
+    Value: !Ref EksCluster
+    Export:
+      Name: !Sub '${AWS::StackName}-EksClusterName'
+  
+  EksClusterArn:
+    Description: EKS Cluster ARN
+    Value: !GetAtt EksCluster.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EksClusterArn'
+  
+  EksClusterEndpoint:
+    Description: EKS Cluster Endpoint
+    Value: !GetAtt EksCluster.Endpoint
+    Export:
+      Name: !Sub '${AWS::StackName}-EksClusterEndpoint'
+  
+  ClusterSecurityGroupId:
+    Description: EKS Cluster Security Group ID
+    Value: !Ref EksClusterSG
+    Export:
+      Name: !Sub '${AWS::StackName}-ClusterSecurityGroupId'
+  
+  ClusterManagedSecurityGroup:
+    Description: EKS Cluster managed security group
+    Value: !GetAtt EksCluster.ClusterSecurityGroupId
+    Export:
+      Name: !Sub '${AWS::StackName}-ClusterManagedSecurityGroup'
+  
+  ClusterOIDCIssuer:
+    Description: EKS Cluster OIDC Issuer URL
+    Value: !GetAtt EksCluster.OpenIdConnectIssuerUrl
+    Export:
+      Name: !Sub '${AWS::StackName}-ClusterOIDCIssuer'
